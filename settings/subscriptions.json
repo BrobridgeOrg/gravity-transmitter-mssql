@@ -1,0 +1,10 @@
+{
+	"subscriptions": {
+		"users": [
+			"dbo.Inventory"
+		],
+		"accounts": [
+			"accounts"
+		]
+	}
+}
