@@ -4,7 +4,7 @@ host = "0.0.0.0:4222"
 
 [subscriber]
 subscriber_id = "mssql_transmitter"
-subscriber_name = "Mssql Transmitter"
+subscriber_name = "MSSQL Transmitter"
 state_store = "./statestore"
 worker_count = 4
 verbose = true
