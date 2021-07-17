@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	gravity_sdk_types_record "github.com/BrobridgeOrg/gravity-sdk/types/record"
 	"github.com/BrobridgeOrg/gravity-transmitter-mssql/pkg/database"
+	buffered_input "github.com/cfsghost/buffered-input"
 	_ "github.com/denisenkom/go-mssqldb"
 	"github.com/jmoiron/sqlx"
 	log "github.com/sirupsen/logrus"
@@ -51,14 +53,24 @@ type Writer struct {
 	db                *sqlx.DB
 	commands          chan *DBCommand
 	completionHandler database.CompletionHandler
+	buffer            *buffered_input.BufferedInput
 }
 
 func NewWriter() *Writer {
-	return &Writer{
+	writer := &Writer{
 		dbInfo:            &DatabaseInfo{},
 		commands:          make(chan *DBCommand, 2048),
 		completionHandler: func(database.DBCommand) {},
 	}
+	// Initializing buffered input
+	opts := buffered_input.NewOptions()
+	opts.ChunkSize = 100
+	opts.ChunkCount = 10000
+	opts.Timeout = 50 * time.Millisecond
+	opts.Handler = writer.chunkHandler
+	writer.buffer = buffered_input.NewBufferedInput(opts)
+
+	return writer
 }
 
 func (writer *Writer) Init() error {
@@ -111,33 +123,196 @@ func (writer *Writer) Init() error {
 	return nil
 }
 
+func (writer *Writer) chunkHandler(chunk []interface{}) {
+
+	dbCommands := make([]*DBCommand, 0, len(chunk))
+	for _, request := range chunk {
+
+		dbCommands = append(dbCommands, request.(*DBCommand))
+	}
+
+	writer.processData(dbCommands)
+}
+
+func (writer *Writer) processData(dbCommands []*DBCommand) {
+	// Write to Database
+	for {
+		var args []interface{}
+		var querys []string
+		var seq uint64
+		tmpQueryStr := ""
+		for _, cmd := range dbCommands {
+			key := ""
+			newKey := ""
+			if cmd.Record.Method == gravity_sdk_types_record.Method_INSERT {
+				if tmpQueryStr != cmd.QueryStr {
+					tmpQueryStr = cmd.QueryStr
+					qStr, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+					newQueryStr := ""
+					lastIndex := 0
+					for i := 1; i <= len(arg); i++ {
+						newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+						key = fmt.Sprintf("%v%d", "@p", i)
+						newKey = fmt.Sprintf("%v%d", "@p", newSeq)
+
+						if i == 1 {
+							index := strings.Index(qStr, key)
+							newQueryStr = fmt.Sprintf("%v%v", qStr[:index], newKey)
+							lastIndex = index + len(key)
+						} else {
+							qStr = qStr[lastIndex:]
+							index := strings.Index(qStr, key)
+							if index == -1 {
+								continue
+							}
+							newQueryStr = fmt.Sprintf("%v%v%v", newQueryStr, qStr[:index], newKey)
+							lastIndex = index + len(key)
+							if i == len(arg) {
+								newQueryStr = fmt.Sprintf("%v%v", newQueryStr, qStr[lastIndex:])
+							}
+						}
+					}
+					querys = append(querys, newQueryStr)
+					args = append(args, arg...)
+
+				} else {
+
+					_, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+					var addVal []string
+					for i := 1; i <= len(arg); i++ {
+						newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+						newKey = fmt.Sprintf("%v%d", "@p", newSeq)
+						addVal = append(addVal, newKey)
+					}
+					addVals := strings.Join(addVal, ",")
+					newQuery := fmt.Sprintf("%s,(%s)", querys[len(querys)-1], addVals)
+					querys[len(querys)-1] = newQuery
+					args = append(args, arg...)
+
+				}
+
+			} else if cmd.Record.Method == gravity_sdk_types_record.Method_UPDATE {
+
+				if tmpQueryStr != cmd.QueryStr {
+					tmpQueryStr = cmd.QueryStr
+					qStr, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+					newQueryStr := ""
+					lastIndex := 0
+					for i := 1; i <= len(arg); i++ {
+
+						newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+						key = fmt.Sprintf("%v%d", "@p", i)
+						newKey = fmt.Sprintf("%v%d", "@p", newSeq)
+
+						if i == 1 {
+							index := strings.Index(qStr, key)
+							newQueryStr = fmt.Sprintf("%v%v", qStr[:index], newKey)
+							lastIndex = index + len(key)
+						} else {
+							qStr = qStr[lastIndex:]
+							index := strings.Index(qStr, key)
+							if index == -1 {
+								continue
+							}
+							newQueryStr = fmt.Sprintf("%v%v%v", newQueryStr, qStr[:index], newKey)
+							lastIndex = index + len(key)
+						}
+					}
+
+					querys = append(querys, newQueryStr)
+					args = append(args, arg...)
+
+				} else {
+
+					qStr, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+					qStr = fmt.Sprintf("%v;", qStr)
+					var addVal []string
+					for i := 1; i <= len(arg); i++ {
+
+						key = fmt.Sprintf("%v%d;", "@p", i)
+						if strings.Index(qStr, key) != -1 {
+							newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+							newKey = fmt.Sprintf("%v%d", "@p", newSeq)
+							qStr = strings.Replace(qStr, key, newKey, 1)
+							newVals := strings.Split(qStr, " WHERE ")
+							addVal = append(addVal, newVals[len(newVals)-1])
+						}
+					}
+					addVals := strings.Join(addVal, " OR ")
+					newQuery := fmt.Sprintf("%s OR %s", querys[len(querys)-1], addVals)
+					querys[len(querys)-1] = newQuery
+					args = append(args, arg[len(arg)-1])
+				}
+
+			} else if cmd.Record.Method == gravity_sdk_types_record.Method_DELETE {
+
+				if tmpQueryStr != cmd.QueryStr {
+
+					tmpQueryStr = cmd.QueryStr
+					qStr, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+					qStr = fmt.Sprintf("%v;", qStr)
+					for i := 1; i <= len(arg); i++ {
+						newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+						if i == len(arg) {
+							key = fmt.Sprintf(" %v%d;", "@p", i)
+							newKey = fmt.Sprintf(" %v%d;", "@p", newSeq)
+							if key != newKey {
+								qStr = strings.Replace(qStr, key, newKey, 1)
+							}
+						}
+					}
+
+					qStr = strings.TrimRight(qStr, ";")
+					querys = append(querys, qStr)
+					args = append(args, arg...)
+
+				} else {
+
+					qStr, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+					qStr = fmt.Sprintf("%v;", qStr)
+					var newVals []string
+					key = fmt.Sprintf(" %v%d;", "@p", len(arg))
+					if strings.Index(qStr, key) != -1 {
+						newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+						newKey = fmt.Sprintf(" %v%d", "@p", newSeq)
+						qStr = strings.Replace(qStr, key, newKey, 1)
+						newVals = strings.Split(qStr, " WHERE ")
+					}
+
+					newQuery := fmt.Sprintf("%s OR %s", querys[len(querys)-1], newVals[len(newVals)-1])
+					querys[len(querys)-1] = newQuery
+					args = append(args, arg[len(arg)-1])
+				}
+			}
+		}
+		// Write to batch
+		queryStr := strings.Join(querys, ";")
+
+		_, err := writer.db.Exec(queryStr, args...)
+		if err != nil {
+
+			log.Error(err)
+			log.Error(queryStr)
+
+			<-time.After(time.Second * 5)
+
+			log.WithFields(log.Fields{}).Warn("Retry to write record to database by batch ...")
+			continue
+		}
+
+		break
+	}
+	for _, cmd := range dbCommands {
+		writer.completionHandler(database.DBCommand(cmd))
+	}
+}
+
 func (writer *Writer) run() {
 	for {
 		select {
 		case cmd := <-writer.commands:
-			for {
-				// Write to database
-				_, err := writer.db.NamedExec(cmd.QueryStr, cmd.Args)
-				if err != nil {
-					log.Error(err)
-					log.Error(cmd.QueryStr)
-					log.Error(cmd.Args)
-
-					<-time.After(time.Second * 5)
-
-					log.WithFields(log.Fields{
-						"event_name": cmd.Record.EventName,
-						"method":     cmd.Record.Method.String(),
-						"table":      cmd.Record.Table,
-					}).Warn("Retry to write record to database...")
-
-					continue
-				}
-
-				writer.completionHandler(database.DBCommand(cmd))
-
-				break
-			}
+			// publish to buffered-input
+			writer.buffer.Push(cmd)
 		}
 	}
 }
