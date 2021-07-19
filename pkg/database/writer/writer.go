@@ -238,20 +238,26 @@ func (writer *Writer) processUpdateData(cmd *DBCommand, querys []string, args []
 
 func (writer *Writer) appendUpdateData(cmd *DBCommand, querys []string, args []interface{}) ([]string, []interface{}) {
 
-	qStr, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+	_, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+	qStr := querys[len(querys)-1]
 	qStr = fmt.Sprintf("%v;", qStr)
-	var newVals []string
+	if strings.Index(qStr, ");") == -1 {
+		lastKey := fmt.Sprintf("%v%d", "@p", seq)
+		lastStr := fmt.Sprintf(" = %v;", lastKey)
 
-	key := fmt.Sprintf("%v%d;", "@p", len(arg))
-	if strings.Index(qStr, key) != -1 {
 		newSeq := atomic.AddUint64((*uint64)(&seq), 1)
 		newKey := fmt.Sprintf("%v%d", "@p", newSeq)
-		qStr = strings.Replace(qStr, key, newKey, 1)
-		newVals = strings.Split(qStr, " WHERE ")
-	}
-	newQuery := fmt.Sprintf("%s OR %s", querys[len(querys)-1], newVals[len(newVals)-1])
+		inStr := fmt.Sprintf(" IN (%v,%v)", lastKey, newKey)
 
-	querys[len(querys)-1] = newQuery
+		qStr = strings.Replace(qStr, lastStr, inStr, 1)
+
+	} else {
+		newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+		newKey := fmt.Sprintf(",%v%d)", "@p", newSeq)
+		qStr = strings.Replace(qStr, ");", newKey, 1)
+	}
+
+	querys[len(querys)-1] = qStr
 	args = append(args, arg[len(arg)-1])
 
 	return querys, args
