@@ -197,68 +197,34 @@ func (writer *Writer) appendInsertData(cmd *DBCommand, querys []string, args []i
 
 func (writer *Writer) processUpdateData(cmd *DBCommand, querys []string, args []interface{}) ([]string, []interface{}) {
 
-	if writer.tmpQueryStr != cmd.QueryStr {
+	writer.tmpQueryStr = cmd.QueryStr
+	qStr, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+	newQueryStr := ""
+	lastIndex := 0
 
-		writer.tmpQueryStr = cmd.QueryStr
-		qStr, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
-		newQueryStr := ""
-		lastIndex := 0
-
-		for i := 1; i <= len(arg); i++ {
-			newSeq := atomic.AddUint64((*uint64)(&seq), 1)
-			key := fmt.Sprintf("%v%d", "@p", i)
-			newKey := fmt.Sprintf("%v%d", "@p", newSeq)
-
-			if i == 1 {
-				index := strings.Index(qStr, key)
-				newQueryStr = fmt.Sprintf("%v%v", qStr[:index], newKey)
-				lastIndex = index + len(key)
-			} else {
-				qStr = qStr[lastIndex:]
-				index := strings.Index(qStr, key)
-				if index == -1 {
-					continue
-				}
-
-				newQueryStr = fmt.Sprintf("%v%v%v", newQueryStr, qStr[:index], newKey)
-				lastIndex = index + len(key)
-			}
-		}
-
-		querys = append(querys, newQueryStr)
-		args = append(args, arg...)
-
-	} else {
-
-		querys, args = writer.appendUpdateData(cmd, querys, args)
-	}
-
-	return querys, args
-}
-
-func (writer *Writer) appendUpdateData(cmd *DBCommand, querys []string, args []interface{}) ([]string, []interface{}) {
-
-	_, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
-	qStr := querys[len(querys)-1]
-	qStr = fmt.Sprintf("%v;", qStr)
-	if strings.Index(qStr, ");") == -1 {
-		lastKey := fmt.Sprintf("%v%d", "@p", seq)
-		lastStr := fmt.Sprintf(" = %v;", lastKey)
-
+	for i := 1; i <= len(arg); i++ {
 		newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+		key := fmt.Sprintf("%v%d", "@p", i)
 		newKey := fmt.Sprintf("%v%d", "@p", newSeq)
-		inStr := fmt.Sprintf(" IN (%v,%v)", lastKey, newKey)
 
-		qStr = strings.Replace(qStr, lastStr, inStr, 1)
+		if i == 1 {
+			index := strings.Index(qStr, key)
+			newQueryStr = fmt.Sprintf("%v%v", qStr[:index], newKey)
+			lastIndex = index + len(key)
+		} else {
+			qStr = qStr[lastIndex:]
+			index := strings.Index(qStr, key)
+			if index == -1 {
+				continue
+			}
 
-	} else {
-		newSeq := atomic.AddUint64((*uint64)(&seq), 1)
-		newKey := fmt.Sprintf(",%v%d)", "@p", newSeq)
-		qStr = strings.Replace(qStr, ");", newKey, 1)
+			newQueryStr = fmt.Sprintf("%v%v%v", newQueryStr, qStr[:index], newKey)
+			lastIndex = index + len(key)
+		}
 	}
 
-	querys[len(querys)-1] = qStr
-	args = append(args, arg[len(arg)-1])
+	querys = append(querys, newQueryStr)
+	args = append(args, arg...)
 
 	return querys, args
 }
@@ -295,7 +261,29 @@ func (writer *Writer) processDeleteData(cmd *DBCommand, querys []string, args []
 
 func (writer *Writer) appendDeleteData(cmd *DBCommand, querys []string, args []interface{}) ([]string, []interface{}) {
 
-	return writer.appendUpdateData(cmd, querys, args)
+	_, arg, _ := writer.db.BindNamed(cmd.QueryStr, cmd.Args)
+	qStr := querys[len(querys)-1]
+	qStr = fmt.Sprintf("%v;", qStr)
+	if strings.Index(qStr, ");") == -1 {
+		lastKey := fmt.Sprintf("%v%d", "@p", seq)
+		lastStr := fmt.Sprintf(" = %v;", lastKey)
+
+		newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+		newKey := fmt.Sprintf("%v%d", "@p", newSeq)
+		inStr := fmt.Sprintf(" IN (%v,%v)", lastKey, newKey)
+
+		qStr = strings.Replace(qStr, lastStr, inStr, 1)
+
+	} else {
+		newSeq := atomic.AddUint64((*uint64)(&seq), 1)
+		newKey := fmt.Sprintf(",%v%d)", "@p", newSeq)
+		qStr = strings.Replace(qStr, ");", newKey, 1)
+	}
+
+	querys[len(querys)-1] = qStr
+	args = append(args, arg[len(arg)-1])
+
+	return querys, args
 }
 
 func (writer *Writer) processData(dbCommands []*DBCommand) {
