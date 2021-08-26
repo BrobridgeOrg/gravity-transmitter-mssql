@@ -316,6 +316,7 @@ func (writer *Writer) processData(dbCommands []*DBCommand) {
 		if err != nil {
 			log.Error(err)
 			log.Error(queryStr)
+			log.Error(args...)
 
 			<-time.After(time.Second * 5)
 
