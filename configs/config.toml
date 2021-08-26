@@ -7,6 +7,7 @@ subscriberID = "mssql_transmitter"
 subscriberName = "MSSQL Transmitter"
 stateStore = "./statestore"
 workerCount = 4
+chunkSize = 2048
 verbose = true
 pipelineStart = 0
 pipelineEnd = -1

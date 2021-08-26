@@ -3,7 +3,7 @@ module github.com/BrobridgeOrg/gravity-transmitter-mssql
 go 1.15
 
 require (
-	github.com/BrobridgeOrg/gravity-sdk v0.0.38
+	github.com/BrobridgeOrg/gravity-sdk v0.0.41
 	github.com/cfsghost/buffered-input v0.0.1
 	github.com/denisenkom/go-mssqldb v0.10.0
 	github.com/jinzhu/copier v0.3.2
