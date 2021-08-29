@@ -21,7 +21,7 @@ enabled = true
 omittedCount = 100000
 
 [bufferInput]
-chunkSize = 1000
+chunkSize = 100
 timeout = 50
 #unit: millisecond
 
