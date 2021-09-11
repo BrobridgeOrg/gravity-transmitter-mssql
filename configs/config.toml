@@ -22,6 +22,7 @@ omittedCount = 100000
 
 [bufferInput]
 chunkSize = 100
+#SQL Server supports a maximum of 2100 parameters. (chunkSize * columns must less than 2100)
 timeout = 50
 #unit: millisecond
 
